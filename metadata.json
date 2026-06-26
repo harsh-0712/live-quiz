@@ -1,0 +1,8 @@
+{
+  "name": "Remix: Live Event Quiz",
+  "description": "A responsive real-time full-stack quiz web application for live events with organizer controls and secure, real-time participant synchronization.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

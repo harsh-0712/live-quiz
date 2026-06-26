@@ -1,0 +1,74 @@
+[
+    {
+      "id": "21885",
+      "quizId": "annual-sales-2026",
+      "quizTitle": "Annual Sales Strategy Quiz",
+      "playedAt": "2026-06-26T18:46:01.253Z",
+      "participantsCount": 1,
+      "participants": [
+        {
+          "participantId": "participant-2323-pmzbduw",
+          "name": "sxdsw",
+          "salesId": "2323",
+          "rank": 1,
+          "score": 3,
+          "totalQuestions": 4,
+          "totalTimeMs": 15686,
+          "responses": [
+            {
+              "questionId": "q1",
+              "questionText": "Which of the following is our primary customer acquisition channel for the Enterprise tier in FY26?",
+              "selectedOptionIds": [
+                "o1_1"
+              ],
+              "selectedOptionTexts": [
+                "Direct Outbound Sales & Strategic Partnerships"
+              ],
+              "isCorrect": true,
+              "timeTakenMs": 4199
+            },
+            {
+              "questionId": "q2",
+              "questionText": "Select all the core value pillars of our LCE Enterprise Platform as outlined in the tech roadmap.",
+              "selectedOptionIds": [
+                "o2_1",
+                "o2_3",
+                "o2_4"
+              ],
+              "selectedOptionTexts": [
+                "Real-time Multi-device Sync & State Reconciliation",
+                "Military-grade end-to-end encryption & compliance",
+                "AI-powered predictive sales forecasting engine"
+              ],
+              "isCorrect": true,
+              "timeTakenMs": 5942
+            },
+            {
+              "questionId": "q3",
+              "questionText": "What is our target Net Revenue Retention (NRR) rate for the current fiscal year?",
+              "selectedOptionIds": [
+                "o3_3"
+              ],
+              "selectedOptionTexts": [
+                "115% - 120% retention rate"
+              ],
+              "isCorrect": true,
+              "timeTakenMs": 2758
+            },
+            {
+              "questionId": "q4",
+              "questionText": "Which three regions are identified as high-growth territories for our Enterprise Cloud suite in the FY26 strategic roadmap?",
+              "selectedOptionIds": [
+                "o4_4"
+              ],
+              "selectedOptionTexts": [
+                "LATAM Central"
+              ],
+              "isCorrect": false,
+              "timeTakenMs": 2787
+            }
+          ]
+        }
+      ]
+    }
+]
