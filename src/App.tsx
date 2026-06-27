@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from "react";
 import { 
   Tv, Phone, ShieldAlert, Sparkles, LogIn, Laptop, ArrowRight, HelpCircle, 
-  Settings, Award, Clock, Users, Database, Play
+  Settings, Award, Clock, Users, Database, Play, ArrowLeft, ExternalLink
 } from "lucide-react";
 import AdminLogin from "./components/AdminLogin";
 import AdminDashboard from "./components/AdminDashboard";
@@ -13,6 +13,7 @@ export default function App() {
   );
   const [showAdminLogin, setShowAdminLogin] = useState(false);
   const [activeTab, setActiveTab] = useState<"host" | "participant">("host");
+  const [isOrganiserPreview, setIsOrganiserPreview] = useState(false);
   const [deepJoinSessionId, setDeepJoinSessionId] = useState<string | null>(null);
   const participantRef = useRef<HTMLDivElement>(null);
 
@@ -43,45 +44,22 @@ export default function App() {
   };
 
   return (
-    <div className="w-full h-screen bg-slate-100 flex flex-col font-sans text-slate-900 overflow-hidden select-none">
-      
-      {/* Mobile/Tablet Screen View Selectors (Only visible on screens smaller than lg) */}
-      <div className="lg:hidden shrink-0 h-14 bg-white border-b border-slate-200 flex items-center justify-around px-4 shadow-xs">
-        <button
-          onClick={() => setActiveTab("host")}
-          className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-bold transition ${
-            activeTab === "host"
-              ? "bg-indigo-600 text-white shadow-md shadow-indigo-100"
-              : "text-slate-500 hover:text-slate-800"
-          }`}
-          id="host-tab-btn"
-        >
-          <Tv className="w-4 h-4" />
-          <span>Organiser Deck</span>
-        </button>
-        <button
-          onClick={() => setActiveTab("participant")}
-          className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-bold transition ${
-            activeTab === "participant"
-              ? "bg-indigo-600 text-white shadow-md shadow-indigo-100"
-              : "text-slate-500 hover:text-slate-800"
-          }`}
-          id="participant-tab-btn"
-        >
-          <Phone className="w-4 h-4" />
-          <span>Participant Screen</span>
-        </button>
-      </div>
-
-      {/* Main Split Layout container */}
-      <div className="flex-1 flex overflow-hidden">
-        
-        {/* Left Side: Organiser Suite / Landing Screen */}
-        <div className={`flex-1 min-w-0 lg:w-2/3 h-full flex flex-col border-r border-slate-200 bg-slate-50 relative ${
-          activeTab === "host" ? "flex" : "hidden lg:flex"
-        }`}>
+    <div className="w-full min-h-[100dvh] h-[100dvh] bg-slate-100 flex flex-col font-sans text-slate-900 overflow-hidden select-none">
+      {activeTab === "host" ? (
+        /* Organiser Suite / Landing Screen */
+        <div className="flex-1 min-w-0 w-full h-full flex flex-col bg-slate-50 relative">
           {adminToken ? (
-            <AdminDashboard adminToken={adminToken} onLogout={handleAdminLogout} />
+            <AdminDashboard 
+              adminToken={adminToken} 
+              onLogout={handleAdminLogout} 
+              onPreviewParticipantScreen={(sessionId) => {
+                setIsOrganiserPreview(true);
+                if (sessionId) {
+                  setDeepJoinSessionId(sessionId);
+                }
+                setActiveTab("participant");
+              }}
+            />
           ) : showAdminLogin ? (
             <div className="flex-1 flex flex-col justify-center items-center">
               <AdminLogin 
@@ -130,8 +108,8 @@ export default function App() {
                 <div className="flex flex-col sm:flex-row items-center gap-4">
                   <button
                     onClick={() => {
+                      setIsOrganiserPreview(true);
                       setActiveTab("participant");
-                      participantRef.current?.scrollIntoView({ behavior: "smooth" });
                     }}
                     className="w-full sm:w-auto px-8 py-3.5 bg-indigo-600 text-white rounded-xl font-bold shadow-lg shadow-indigo-200 hover:bg-indigo-700 transition flex items-center justify-center gap-2.5 active:scale-95 text-sm uppercase tracking-wide cursor-pointer"
                   >
@@ -181,18 +159,40 @@ export default function App() {
             </div>
           )}
         </div>
-
-        {/* Right Side: Participant Portal (Rendered inside Phone Mockup layout on Desktop) */}
-        <div ref={participantRef} className={`lg:w-1/3 min-w-0 h-full lg:bg-slate-200 items-center justify-center lg:p-6 shrink-0 relative overflow-hidden ${
-          activeTab === "participant" ? "flex w-full bg-white" : "hidden lg:flex"
-        }`}>
+      ) : (
+        /* Participant Portal view only - completely isolated, no menu or navigation tabs */
+        <div ref={participantRef} className="flex-1 w-full h-full bg-slate-200 flex items-center justify-center p-0 lg:p-6 relative overflow-hidden">
           {/* Ambient light effects in background */}
           <div className="absolute -top-12 -right-12 w-64 h-64 bg-indigo-500/10 rounded-full blur-3xl pointer-events-none"></div>
           <div className="absolute -bottom-12 -left-12 w-64 h-64 bg-indigo-600/10 rounded-full blur-3xl pointer-events-none"></div>
 
-          <ParticipantPortal initialSessionId={deepJoinSessionId} />
+          {isOrganiserPreview && (
+            <div className="absolute top-4 left-4 z-50 animate-fade-in">
+              <button
+                onClick={() => {
+                  setActiveTab("host");
+                  setIsOrganiserPreview(false);
+                }}
+                className="flex items-center gap-2 px-4 py-2 bg-slate-900 hover:bg-slate-850 text-white rounded-xl text-xs font-bold shadow-xl border border-slate-700 transition cursor-pointer active:scale-95"
+              >
+                <ArrowLeft className="w-3.5 h-3.5 text-slate-400" />
+                <span>Return to Organiser Screen</span>
+              </button>
+            </div>
+          )}
+
+          <ParticipantPortal 
+            initialSessionId={deepJoinSessionId} 
+            onLeave={() => {
+              if (isOrganiserPreview) {
+                setActiveTab("host");
+                setIsOrganiserPreview(false);
+              }
+              setDeepJoinSessionId(null);
+            }}
+          />
         </div>
-      </div>
+      )}
     </div>
   );
 }

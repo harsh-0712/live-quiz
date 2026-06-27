@@ -58,15 +58,43 @@ function broadcastToOrganisers(sessionId: string, event: any) {
   }
 }
 
-// Sanitize question payload for participants (stripping correct answers)
-function sanitizeQuestionForParticipant(question: Question) {
+// Shuffle array using Fisher-Yates with a seed
+function shuffleArray<T>(array: T[], seed: string): T[] {
+  const shuffled = [...array];
+  let currentIndex = shuffled.length;
+  let temporaryValue, randomIndex;
+  
+  // Simple seeded pseudo-random
+  let seedValue = 0;
+  for (let i = 0; i < seed.length; i++) {
+    seedValue = (seedValue + seed.charCodeAt(i)) % 10000;
+  }
+  const random = () => {
+    seedValue = (seedValue * 16807) % 2147483647;
+    return (seedValue - 1) / 2147483646;
+  };
+
+  while (0 !== currentIndex) {
+    randomIndex = Math.floor(random() * currentIndex);
+    currentIndex -= 1;
+    temporaryValue = shuffled[currentIndex];
+    shuffled[currentIndex] = shuffled[randomIndex];
+    shuffled[randomIndex] = temporaryValue;
+  }
+  return shuffled;
+}
+
+// Sanitize question payload for participants (stripping correct answers and shuffling options)
+function sanitizeQuestionForParticipant(question: Question, participantId: string) {
+  const shuffledOptions = shuffleArray(question.options, participantId + question.id);
+  
   return {
     id: question.id,
     quizId: question.quizId,
     text: question.text,
     type: question.type,
     orderIndex: question.orderIndex,
-    options: question.options.map(o => ({
+    options: shuffledOptions.map(o => ({
       id: o.id,
       questionId: o.questionId,
       text: o.text,
@@ -110,6 +138,14 @@ wss.on("connection", (ws, req) => {
 
   if (!role || !sessionId) {
     ws.send(JSON.stringify({ type: "ERROR", data: { message: "Missing role or sessionId parameters" } }));
+    ws.close();
+    return;
+  }
+
+  // Validate session exists in dbStore
+  const sessionCheck = dbStore.getSession(sessionId);
+  if (!sessionCheck) {
+    ws.send(JSON.stringify({ type: "ERROR", data: { message: "Invalid Session Code. Please check the code and try again." } }));
     ws.close();
     return;
   }
@@ -186,7 +222,7 @@ wss.on("connection", (ws, req) => {
           data: {
             state: "ACTIVE",
             session,
-            currentQuestion: sanitizeQuestionForParticipant(currentQuestion),
+            currentQuestion: sanitizeQuestionForParticipant(currentQuestion, participantRecord.id),
             participantAnswer
           }
         }));
@@ -366,6 +402,11 @@ function requireAdmin(req: express.Request, res: express.Response, next: express
 
 // --- API Endpoints ---
 
+// Keep Alive
+app.get("/api/keep-alive", (req, res) => {
+  res.send("Running");
+});
+
 // Login
 app.post("/api/admin/login", (req, res) => {
   const { password } = req.body;
@@ -490,6 +531,30 @@ app.post("/api/sessions", (req, res) => {
     return;
   }
 
+  // Expire and archive any existing active sessions in the system first
+  const existingSessions = dbStore.getSessions();
+  for (const existing of existingSessions) {
+    // Archive to preserve history
+    dbStore.archiveSession(existing.id);
+    // Broadcast STOPPED to old session participants
+    broadcastToSession(existing.id, {
+      type: "QUIZ_STOPPED"
+    });
+    // Disconnect old socket clients
+    const clients = sessionClients.get(existing.id);
+    if (clients) {
+      for (const client of clients.values()) {
+        try {
+          client.ws.send(JSON.stringify({ type: "ERROR", data: { message: "Invalid Session Code. Please check the code and try again." } }));
+          client.ws.close();
+        } catch (err) {}
+      }
+      sessionClients.delete(existing.id);
+    }
+    // Delete the old session from DB completely
+    dbStore.deleteSession(existing.id);
+  }
+
   // Check if session already exists for this quiz, otherwise create a new one
   let sessionId = "";
   do {
@@ -503,7 +568,8 @@ app.post("/api/sessions", (req, res) => {
     currentQuestionIndex: 0,
     startedAt: null,
     completedAt: null,
-    leaderboardRevealedAt: null
+    leaderboardRevealedAt: null,
+    questionOrder: []
   };
   dbStore.saveSession(session);
 
@@ -542,24 +608,46 @@ app.post("/api/sessions/:id/action", requireAdmin, (req, res) => {
     session.status = "ACTIVE";
     session.currentQuestionIndex = 0;
     session.startedAt = new Date().toISOString();
+    session.questionOrder = shuffleArray(quiz.questions.map(q => q.id), session.id);
     dbStore.saveSession(session);
 
     // Broadcast to all participants to start
-    const firstQuestion = quiz.questions[0];
-    broadcastToSession(session.id, {
-      type: "QUIZ_STARTED",
-      data: {
-        session,
-        firstQuestion: sanitizeQuestionForParticipant(firstQuestion)
+    const clients = sessionClients.get(session.id);
+    if (clients) {
+      for (const client of clients.values()) {
+        if (client.role === "participant" && client.ws.readyState === WebSocket.OPEN) {
+          const partRecord = dbStore.getParticipantBySalesId(session.id, client.salesId || "");
+          const firstQuestionId = session.questionOrder[0];
+          const firstQuestion = quiz.questions.find(q => q.id === firstQuestionId)!;
+          
+          client.ws.send(JSON.stringify({
+            type: "QUIZ_STARTED",
+            data: {
+              session,
+              firstQuestion: sanitizeQuestionForParticipant(firstQuestion, partRecord ? partRecord.id : client.id)
+            }
+          }));
+        } else if (client.role === "organiser" && client.ws.readyState === WebSocket.OPEN) {
+          const firstQuestionId = session.questionOrder[0];
+          const firstQuestion = quiz.questions.find(q => q.id === firstQuestionId)!;
+          client.ws.send(JSON.stringify({
+            type: "QUIZ_STARTED",
+            data: {
+              session,
+              firstQuestion: firstQuestion
+            }
+          }));
+        }
       }
-    });
+    }
   } else if (action === "NEXT_QUESTION") {
     if (session.currentQuestionIndex < quiz.questions.length - 1) {
       session.currentQuestionIndex += 1;
       session.startedAt = new Date().toISOString(); // Reset start time for the next question timer
       dbStore.saveSession(session);
 
-      const nextQuestion = quiz.questions[session.currentQuestionIndex];
+      const nextQuestionId = session.questionOrder[session.currentQuestionIndex];
+      const nextQuestion = quiz.questions.find(q => q.id === nextQuestionId)!;
       
       // Send targeted updates to participants with their previous answer state for this question (if any)
       const clients = sessionClients.get(session.id);
@@ -573,7 +661,7 @@ app.post("/api/sessions/:id/action", requireAdmin, (req, res) => {
               type: "QUESTION_CHANGED",
               data: {
                 session,
-                question: sanitizeQuestionForParticipant(nextQuestion),
+                question: sanitizeQuestionForParticipant(nextQuestion, partRecord ? partRecord.id : client.id),
                 participantAnswer: partAnswer
               }
             }));
@@ -663,20 +751,92 @@ app.post("/api/sessions/:id/action", requireAdmin, (req, res) => {
       type: "QUIZ_STOPPED"
     });
     
-    // Clear old session participants and connections
+    // Send dynamic error to any active ws clients of the old session and close them
+    const clients = sessionClients.get(session.id);
+    if (clients) {
+      for (const client of clients.values()) {
+        try {
+          client.ws.send(JSON.stringify({ type: "ERROR", data: { message: "Invalid Session Code. Please check the code and try again." } }));
+          client.ws.close();
+        } catch (err) {}
+      }
+      sessionClients.delete(session.id);
+    }
+
+    // Clear old session participants and connections, then delete the old session completely to expire it!
     dbStore.clearAllParticipants(session.id);
-    sessionClients.delete(session.id);
+    dbStore.deleteSession(session.id);
     
     // Return new session to AdminDashboard
     res.json(newSession);
+    return;
+  } else if (action === "DEACTIVATE") {
+    // Archive session data before deleting
+    dbStore.archiveSession(session.id);
+
+    // Broadcast STOPPED to session participants
+    broadcastToSession(session.id, {
+      type: "QUIZ_STOPPED"
+    });
+
+    // Send error message to active WS clients and close them
+    const clients = sessionClients.get(session.id);
+    if (clients) {
+      for (const client of clients.values()) {
+        try {
+          client.ws.send(JSON.stringify({ type: "ERROR", data: { message: "Invalid Session Code. Please check the code and try again." } }));
+          client.ws.close();
+        } catch (err) {}
+      }
+      sessionClients.delete(session.id);
+    }
+
+    // Clear old session participants and delete session entirely so it becomes inactive
+    dbStore.clearAllParticipants(session.id);
+    dbStore.deleteSession(session.id);
+
+    res.json({ success: true });
     return;
   }
 
   res.json(session);
 });
 
+// Self-ping helper to keep Render instance alive
+function startSelfPinging() {
+  const externalUrl = process.env.RENDER_EXTERNAL_URL;
+  if (!externalUrl) {
+    console.log("Keep-alive self-pinging is inactive (RENDER_EXTERNAL_URL not set).");
+    return;
+  }
+
+  // Clean trailing slash if present
+  const targetHost = externalUrl.endsWith("/") ? externalUrl.slice(0, -1) : externalUrl;
+  console.log(`Keep-alive self-pinging is active. Targeting: ${targetHost}/api/keep-alive every 10 minutes.`);
+  
+  const ping = async () => {
+    try {
+      const res = await fetch(`${targetHost}/api/keep-alive`);
+      const text = await res.text();
+      console.log(`[Keep-Alive] Pinged self. Response: ${text} (${res.status})`);
+    } catch (err: any) {
+      console.warn(`[Keep-Alive] Ping failed:`, err.message || err);
+    }
+  };
+
+  // Run initial ping after 30 seconds, then every 10 minutes
+  setTimeout(ping, 30000);
+  setInterval(ping, 10 * 60 * 1000);
+}
+
 // Create and mount Vite middleware in development, or serve built assets in production
 async function setupServer() {
+  // Sync memory cache with MongoDB before starting
+  await dbStore.init();
+
+  // Start self-pinging to avoid Render spin-down
+  startSelfPinging();
+
   if (process.env.NODE_ENV !== "production") {
     const vite = await createViteServer({
       server: { middlewareMode: true },

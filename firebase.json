@@ -1,0 +1,12 @@
+{
+  "firestore": [
+    {
+      "database": "(default)",
+      "rules": "firestore.rules"
+    },
+    {
+      "database": "ai-studio-remixliveeventqu-a629fae5-76ed-4e16-8b0c-ea74fe71b67d",
+      "rules": "firestore.rules"
+    }
+  ]
+}

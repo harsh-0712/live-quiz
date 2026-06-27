@@ -1,0 +1,99 @@
+{
+  "entities": {
+    "Quiz": {
+      "title": "Quiz",
+      "description": "A quiz template with questions and options.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "title": { "type": "string" },
+        "description": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" },
+        "questions": { "type": "array" }
+      },
+      "required": ["id", "title", "questions"]
+    },
+    "QuizSession": {
+      "title": "QuizSession",
+      "description": "An active or completed instance of a quiz being played.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "quizId": { "type": "string" },
+        "status": { "type": "string", "enum": ["LOBBY", "ACTIVE", "COMPLETED", "LEADERBOARD_REVEALED"] },
+        "currentQuestionIndex": { "type": "number" },
+        "startedAt": { "type": "string" },
+        "completedAt": { "type": "string" },
+        "leaderboardRevealedAt": { "type": "string" }
+      },
+      "required": ["id", "quizId", "status", "currentQuestionIndex"]
+    },
+    "Participant": {
+      "title": "Participant",
+      "description": "A user participating in a specific quiz session.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "quizSessionId": { "type": "string" },
+        "name": { "type": "string" },
+        "salesId": { "type": "string" },
+        "joinedAt": { "type": "string", "format": "date-time" },
+        "connectionStatus": { "type": "string", "enum": ["CONNECTED", "DISCONNECTED"] }
+      },
+      "required": ["id", "quizSessionId", "name", "salesId", "joinedAt", "connectionStatus"]
+    },
+    "ParticipantAnswer": {
+      "title": "ParticipantAnswer",
+      "description": "An answer submitted by a participant for a specific question.",
+      "type": "object",
+      "properties": {
+        "participantId": { "type": "string" },
+        "questionId": { "type": "string" },
+        "selectedOptionIds": { "type": "array" },
+        "isCorrect": { "type": "boolean" },
+        "timeTakenMs": { "type": "number" },
+        "firstShownAt": { "type": "number" },
+        "lastAnsweredAt": { "type": "number" },
+        "isAnswered": { "type": "boolean" }
+      },
+      "required": ["participantId", "questionId", "selectedOptionIds", "isCorrect", "timeTakenMs"]
+    },
+    "QuizHistoryEntry": {
+      "title": "QuizHistoryEntry",
+      "description": "An archived record of a completed quiz session.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "quizId": { "type": "string" },
+        "quizTitle": { "type": "string" },
+        "playedAt": { "type": "string", "format": "date-time" },
+        "participantsCount": { "type": "number" },
+        "participants": { "type": "array" }
+      },
+      "required": ["id", "quizId", "quizTitle", "playedAt", "participantsCount", "participants"]
+    }
+  },
+  "firestore": {
+    "/quizzes/{quizId}": {
+      "schema": "Quiz",
+      "description": "The quizzes available in the app."
+    },
+    "/sessions/{sessionId}": {
+      "schema": "QuizSession",
+      "description": "The active quiz sessions."
+    },
+    "/participants/{participantId}": {
+      "schema": "Participant",
+      "description": "The participants of active quiz sessions."
+    },
+    "/answers/{answerId}": {
+      "schema": "ParticipantAnswer",
+      "description": "The answers submitted by the participants."
+    },
+    "/history/{historyId}": {
+      "schema": "QuizHistoryEntry",
+      "description": "The archive of completed quiz sessions."
+    }
+  }
+}

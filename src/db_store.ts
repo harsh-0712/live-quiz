@@ -1,6 +1,18 @@
 import fs from "fs";
 import path from "path";
-import { Quiz, QuizSession, Participant, ParticipantAnswer, Question, Option, LeaderboardEntry, ParticipantHistoryEntry, ParticipantQuestionResponse, QuizHistoryEntry } from "./types.js";
+import { MongoClient, Db } from "mongodb";
+import { 
+  Quiz, 
+  QuizSession, 
+  Participant, 
+  ParticipantAnswer, 
+  Question, 
+  Option, 
+  LeaderboardEntry, 
+  ParticipantHistoryEntry, 
+  ParticipantQuestionResponse, 
+  QuizHistoryEntry 
+} from "./types.js";
 
 const DATA_FILE = path.join(process.cwd(), "data.json");
 const HISTORY_FILE = path.join(process.cwd(), "history.json");
@@ -137,6 +149,37 @@ const DEFAULT_QUIZZES: Quiz[] = [
   }
 ];
 
+// Globally accessible MongoDB database reference
+let dbClient: MongoClient | null = null;
+let db: Db | null = null;
+
+export enum OperationType {
+  CREATE = 'create',
+  UPDATE = 'update',
+  DELETE = 'delete',
+  LIST = 'list',
+  GET = 'get',
+  WRITE = 'write',
+}
+
+export interface MongoErrorInfo {
+  error: string;
+  operationType: OperationType;
+  collection: string;
+}
+
+export function handleMongoError(error: unknown, operationType: OperationType, collection: string): void {
+  const errInfo: MongoErrorInfo = {
+    error: error instanceof Error ? error.message : String(error),
+    operationType,
+    collection
+  };
+  console.error('MongoDB Error (Gracefully Handled): ', JSON.stringify(errInfo));
+}
+
+// Lazy initialization is done in init()
+
+
 class DatabaseStore {
   private data: DatabaseSchema = {
     quizzes: [],
@@ -147,31 +190,43 @@ class DatabaseStore {
   private history: QuizHistoryEntry[] = [];
 
   constructor() {
-    this.load();
+    this.loadLocalFallback();
   }
 
-  private load() {
+  private saveLocalData() {
+    try {
+      fs.writeFileSync(DATA_FILE, JSON.stringify(this.data, null, 2));
+    } catch (err) {
+      console.error("Failed to write to local fallback data.json:", err);
+    }
+  }
+
+  private saveLocalHistory() {
+    try {
+      fs.writeFileSync(HISTORY_FILE, JSON.stringify(this.history, null, 2));
+    } catch (err) {
+      console.error("Failed to write to local fallback history.json:", err);
+    }
+  }
+
+  private loadLocalFallback() {
     try {
       if (fs.existsSync(DATA_FILE)) {
         const fileContent = fs.readFileSync(DATA_FILE, "utf-8");
         this.data = JSON.parse(fileContent);
 
         // Normalize any old session IDs to 5-digit codes
-        let hasChanges = false;
         if (this.data.sessions && Array.isArray(this.data.sessions)) {
           this.data.sessions.forEach((session) => {
             if (!/^\d{5}$/.test(session.id)) {
               const oldId = session.id;
-              // Generate a 5-digit code that is unique
               let newId = "";
               do {
                 newId = Math.floor(10000 + Math.random() * 90000).toString();
               } while (this.data.sessions.some(s => s.id === newId));
 
               session.id = newId;
-              hasChanges = true;
 
-              // Also update any participants pointing to this session
               if (this.data.participants && Array.isArray(this.data.participants)) {
                 this.data.participants.forEach((p) => {
                   const pSessionId = p.quizSessionId || "";
@@ -186,27 +241,19 @@ class DatabaseStore {
             }
           });
         }
-        // Normalize connectionStatus for all participants to DISCONNECTED on startup since no websocket is yet active
         if (this.data.participants && Array.isArray(this.data.participants)) {
           this.data.participants.forEach((p) => {
             p.connectionStatus = "DISCONNECTED";
           });
-          hasChanges = true;
-        }
-
-        if (hasChanges) {
-          this.saveData();
         }
       } else {
         this.data.quizzes = DEFAULT_QUIZZES;
-        this.saveData();
       }
     } catch (e) {
-      console.error("Failed to load database, using fallback", e);
+      console.error("Failed to load local database fallback:", e);
       this.data.quizzes = DEFAULT_QUIZZES;
     }
 
-    // Load history
     try {
       if (fs.existsSync(HISTORY_FILE)) {
         const historyContent = fs.readFileSync(HISTORY_FILE, "utf-8");
@@ -215,29 +262,133 @@ class DatabaseStore {
         this.history = [];
       }
     } catch (e) {
-      console.error("Failed to load history, using empty", e);
+      console.error("Failed to load local history fallback:", e);
       this.history = [];
     }
   }
 
-  public save() {
-    this.saveData();
-    this.saveHistory();
-  }
-
-  private saveData() {
-    try {
-      fs.writeFileSync(DATA_FILE, JSON.stringify(this.data, null, 2), "utf-8");
-    } catch (e) {
-      console.error("Failed to save database", e);
+  // Load from MongoDB at startup (Async)
+  public async init() {
+    const uri = process.env.MONGODB_URI;
+    if (!uri) {
+      console.warn("MONGODB_URI environment variable is not defined. Running in offline/in-memory mode with local data.json fallback.");
+      return;
     }
-  }
 
-  private saveHistory() {
     try {
-      fs.writeFileSync(HISTORY_FILE, JSON.stringify(this.history, null, 2), "utf-8");
-    } catch (e) {
-      console.error("Failed to save history", e);
+      console.log("Connecting to MongoDB...");
+      dbClient = new MongoClient(uri);
+      await dbClient.connect();
+      
+      const dbName = process.env.MONGODB_DB_NAME || "quiz_app";
+      db = dbClient.db(dbName);
+      console.log(`Connected successfully to MongoDB database: ${dbName}`);
+
+      // 1. Quizzes
+      const quizzesCursor = db.collection("quizzes").find({});
+      const quizzesList = (await quizzesCursor.toArray()).map(doc => {
+        const { _id, ...rest } = doc;
+        return rest as unknown as Quiz;
+      });
+
+      if (quizzesList.length === 0) {
+        console.log("No quizzes found in MongoDB. Seeding default quizzes...");
+        this.data.quizzes = DEFAULT_QUIZZES;
+        for (const quiz of DEFAULT_QUIZZES) {
+          await db.collection("quizzes").updateOne(
+            { _id: quiz.id as any },
+            { $set: quiz },
+            { upsert: true }
+          );
+        }
+      } else {
+        this.data.quizzes = quizzesList;
+      }
+
+      // 2. Sessions
+      const sessionsCursor = db.collection("sessions").find({});
+      const sessionsList = (await sessionsCursor.toArray()).map(doc => {
+        const { _id, ...rest } = doc;
+        return rest as unknown as QuizSession;
+      });
+      this.data.sessions = sessionsList;
+
+      // Normalize sessions on startup
+      this.data.sessions.forEach((session) => {
+        if (!/^\d{5}$/.test(session.id)) {
+          const oldId = session.id;
+          let newId = "";
+          do {
+            newId = Math.floor(10000 + Math.random() * 90000).toString();
+          } while (this.data.sessions.some(s => s.id === newId));
+
+          session.id = newId;
+          if (db) {
+            db.collection("sessions").deleteOne({ _id: oldId as any }).catch(() => {});
+            db.collection("sessions").updateOne(
+              { _id: newId as any },
+              { $set: session },
+              { upsert: true }
+            ).catch(() => {});
+          }
+        }
+      });
+
+      // 3. Participants
+      const participantsCursor = db.collection("participants").find({});
+      const participantsList = (await participantsCursor.toArray()).map(doc => {
+        const { _id, ...rest } = doc;
+        const p = rest as unknown as Participant;
+        // Normalize connectionStatus to DISCONNECTED on boot
+        p.connectionStatus = "DISCONNECTED";
+        
+        if (db) {
+          db.collection("participants").updateOne(
+            { _id: doc._id },
+            { $set: { connectionStatus: "DISCONNECTED" } }
+          ).catch(() => {});
+        }
+        return p;
+      });
+      this.data.participants = participantsList;
+
+      // 4. Answers
+      const answersCursor = db.collection("answers").find({});
+      const answersList = (await answersCursor.toArray()).map(doc => {
+        const { _id, ...rest } = doc;
+        return rest as unknown as ParticipantAnswer;
+      });
+      this.data.answers = answersList;
+
+      // 5. History
+      const historyCursor = db.collection("history").find({});
+      const historyList = (await historyCursor.toArray()).map(doc => {
+        const { _id, ...rest } = doc;
+        return rest as unknown as QuizHistoryEntry;
+      });
+      historyList.sort((a, b) => new Date(b.playedAt).getTime() - new Date(a.playedAt).getTime());
+      this.history = historyList;
+
+      console.log(`Database sync completed successfully! Quizzes: ${this.data.quizzes.length}, Sessions: ${this.data.sessions.length}, Participants: ${this.data.participants.length}, Answers: ${this.data.answers.length}, History: ${this.history.length}`);
+    } catch (err: any) {
+      console.warn("----------------------------------------------------------------------");
+      console.warn("⚠️  MONGODB CONNECTION NOTICE ⚠️");
+      console.warn("Could not connect to MongoDB server:", err.message || err);
+      console.warn("");
+      console.warn("If you are using MongoDB Atlas, this is likely because your database");
+      console.warn("cluster's IP Whitelist does not allow connections from this container.");
+      console.warn("");
+      console.warn("HOW TO FIX MANUALLY:");
+      console.warn("1. Go to your MongoDB Atlas dashboard (https://cloud.mongodb.com).");
+      console.warn("2. In the left-hand menu, under Security, click 'Network Access'.");
+      console.warn("3. Click the green 'Add IP Address' button.");
+      console.warn("4. Click 'ALLOW ACCESS FROM ANYWHERE' (adds IP address 0.0.0.0/0).");
+      console.warn("5. Click 'Confirm' and wait a moment for the status to change to 'Active'.");
+      console.warn("");
+      console.warn("Falling back gracefully to local persistence ('data.json' and 'history.json').");
+      console.warn("----------------------------------------------------------------------");
+      db = null;
+      dbClient = null;
     }
   }
 
@@ -252,19 +403,48 @@ class DatabaseStore {
 
   public saveQuiz(quiz: Quiz) {
     const index = this.data.quizzes.findIndex(q => q.id === quiz.id);
+    const updatedQuiz = { 
+      ...quiz, 
+      createdAt: quiz.createdAt || new Date().toISOString(), 
+      updatedAt: new Date().toISOString() 
+    };
     if (index >= 0) {
-      this.data.quizzes[index] = { ...quiz, updatedAt: new Date().toISOString() };
+      this.data.quizzes[index] = updatedQuiz;
     } else {
-      this.data.quizzes.push({ ...quiz, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() });
+      this.data.quizzes.push(updatedQuiz);
     }
-    this.save();
+    this.saveLocalData();
+    
+    if (db) {
+      db.collection("quizzes").updateOne(
+        { _id: quiz.id as any },
+        { $set: updatedQuiz },
+        { upsert: true }
+      ).catch((err: any) => {
+        console.error("MongoDB saveQuiz failed:", err);
+        handleMongoError(err, OperationType.WRITE, "quizzes");
+      });
+    }
   }
 
   public deleteQuiz(id: string) {
     this.data.quizzes = this.data.quizzes.filter(q => q.id !== id);
-    // clean up linked sessions/participants/answers
+    const linkedSessionIds = this.data.sessions.filter(s => s.quizId === id).map(s => s.id);
     this.data.sessions = this.data.sessions.filter(s => s.quizId !== id);
-    this.save();
+    this.saveLocalData();
+    
+    if (db) {
+      db.collection("quizzes").deleteOne({ _id: id as any }).catch((err: any) => {
+        console.error("MongoDB deleteQuiz failed:", err);
+        handleMongoError(err, OperationType.DELETE, "quizzes");
+      });
+      for (const sId of linkedSessionIds) {
+        db.collection("sessions").deleteOne({ _id: sId as any }).catch((err: any) => {
+          handleMongoError(err, OperationType.DELETE, "sessions");
+        });
+        this.clearAllParticipants(sId);
+      }
+    }
   }
 
   // Sessions
@@ -287,13 +467,37 @@ class DatabaseStore {
     } else {
       this.data.sessions.push(session);
     }
-    this.save();
+    this.saveLocalData();
+    
+    if (db) {
+      db.collection("sessions").updateOne(
+        { _id: session.id as any },
+        { $set: session },
+        { upsert: true }
+      ).catch((err: any) => {
+        console.error("MongoDB saveSession failed:", err);
+        handleMongoError(err, OperationType.WRITE, "sessions");
+      });
+    }
   }
 
   public deleteSession(id: string) {
     this.data.sessions = this.data.sessions.filter(s => s.id !== id);
     this.data.participants = this.data.participants.filter(p => p.quizSessionId !== id);
-    this.save();
+    this.saveLocalData();
+    
+    if (db) {
+      db.collection("sessions").deleteOne({ _id: id as any }).catch((err: any) => {
+        console.error("MongoDB deleteSession failed:", err);
+        handleMongoError(err, OperationType.DELETE, "sessions");
+      });
+      
+      // Clean up participants
+      db.collection("participants").deleteMany({ quizSessionId: id }).catch((err: any) => {
+        console.error("MongoDB deleteSession participants cleanup failed:", err);
+        handleMongoError(err, OperationType.DELETE, "participants");
+      });
+    }
   }
 
   // Participants
@@ -310,16 +514,37 @@ class DatabaseStore {
   }
 
   public addParticipant(participant: Participant) {
-    // Prevent duplicates
     const existing = this.getParticipantBySalesId(participant.quizSessionId, participant.salesId);
     if (existing) {
       existing.connectionStatus = "CONNECTED";
       existing.id = participant.id; // update to new socket ID
-      this.save();
+      this.saveLocalData();
+      
+      if (db) {
+        db.collection("participants").updateOne(
+          { _id: existing.id as any },
+          { $set: existing },
+          { upsert: true }
+        ).catch((err: any) => {
+          console.error("MongoDB updateParticipant failed:", err);
+          handleMongoError(err, OperationType.WRITE, "participants");
+        });
+      }
       return existing;
     }
     this.data.participants.push(participant);
-    this.save();
+    this.saveLocalData();
+    
+    if (db) {
+      db.collection("participants").updateOne(
+        { _id: participant.id as any },
+        { $set: participant },
+        { upsert: true }
+      ).catch((err: any) => {
+        console.error("MongoDB addParticipant failed:", err);
+        handleMongoError(err, OperationType.WRITE, "participants");
+      });
+    }
     return participant;
   }
 
@@ -327,7 +552,17 @@ class DatabaseStore {
     const participant = this.getParticipant(id);
     if (participant) {
       participant.connectionStatus = status;
-      this.save();
+      this.saveLocalData();
+      
+      if (db) {
+        db.collection("participants").updateOne(
+          { _id: id as any },
+          { $set: { connectionStatus: status } }
+        ).catch((err: any) => {
+          console.error("MongoDB updateParticipantStatus failed:", err);
+          handleMongoError(err, OperationType.UPDATE, "participants");
+        });
+      }
     }
   }
 
@@ -354,7 +589,19 @@ class DatabaseStore {
     } else {
       this.data.answers.push(answer);
     }
-    this.save();
+    this.saveLocalData();
+    
+    if (db) {
+      const docId = `${answer.participantId}_${answer.questionId}`;
+      db.collection("answers").updateOne(
+        { _id: docId as any },
+        { $set: answer },
+        { upsert: true }
+      ).catch((err: any) => {
+        console.error("MongoDB saveAnswer failed:", err);
+        handleMongoError(err, OperationType.WRITE, "answers");
+      });
+    }
   }
 
   public clearSessionAnswersAndParticipants(sessionId: string, activeParticipantIds?: string[]) {
@@ -365,40 +612,66 @@ class DatabaseStore {
     this.data.answers = this.data.answers.filter(a => !pIds.includes(a.participantId));
     
     // Only remove disconnected participants of this session, keep connected ones
+    const removedParticipantIds: string[] = [];
     this.data.participants = this.data.participants.filter(p => {
       if (p.quizSessionId === sessionId) {
-        if (activeParticipantIds) {
-          return activeParticipantIds.includes(p.id);
+        const keep = activeParticipantIds ? activeParticipantIds.includes(p.id) : p.connectionStatus === "CONNECTED";
+        if (!keep) {
+          removedParticipantIds.push(p.id);
         }
-        return p.connectionStatus === "CONNECTED";
+        return keep;
       }
       return true;
     });
+    this.saveLocalData();
     
-    this.save();
+    if (db) {
+      db.collection("answers").deleteMany({ participantId: { $in: pIds } }).catch((err: any) => {
+        handleMongoError(err, OperationType.DELETE, "answers");
+      });
+      db.collection("participants").deleteMany({ _id: { $in: removedParticipantIds as any[] } }).catch((err: any) => {
+        handleMongoError(err, OperationType.DELETE, "participants");
+      });
+    }
   }
 
   public removeDisconnectedParticipants(sessionId: string) {
+    const removedParticipantIds: string[] = [];
     this.data.participants = this.data.participants.filter(p => {
       if (p.quizSessionId === sessionId) {
-        return p.connectionStatus === "CONNECTED";
+        const keep = p.connectionStatus === "CONNECTED";
+        if (!keep) {
+          removedParticipantIds.push(p.id);
+        }
+        return keep;
       }
       return true;
     });
-    this.save();
+    this.saveLocalData();
+    
+    if (db) {
+      db.collection("participants").deleteMany({ _id: { $in: removedParticipantIds as any[] } }).catch((err: any) => {
+        handleMongoError(err, OperationType.DELETE, "participants");
+      });
+    }
   }
 
   public clearAllParticipants(sessionId: string) {
     const participants = this.getParticipants(sessionId);
     const pIds = participants.map(p => p.id);
     
-    // Clear all answers for this session's participants
     this.data.answers = this.data.answers.filter(a => !pIds.includes(a.participantId));
-    
-    // Remove all participants
     this.data.participants = this.data.participants.filter(p => p.quizSessionId !== sessionId);
+    this.saveLocalData();
     
-    this.save();
+    if (db) {
+      db.collection("participants").deleteMany({ _id: { $in: pIds as any[] } }).catch((err: any) => {
+        handleMongoError(err, OperationType.DELETE, "participants");
+      });
+      db.collection("answers").deleteMany({ participantId: { $in: pIds } }).catch((err: any) => {
+        handleMongoError(err, OperationType.DELETE, "answers");
+      });
+    }
   }
 
   // Scoring Logic
@@ -428,11 +701,10 @@ class DatabaseStore {
         score,
         totalQuestions: quiz.questions.length,
         totalTimeMs,
-        rank: 0 // Will assign below
+        rank: 0
       };
     });
 
-    // Sort: Higher score ranks first. If tied, lower total time ranks higher. If still tied, sort by salesId.
     entries.sort((a, b) => {
       if (b.score !== a.score) {
         return b.score - a.score;
@@ -443,7 +715,6 @@ class DatabaseStore {
       return a.salesId.localeCompare(b.salesId);
     });
 
-    // Assign rank
     entries.forEach((entry, i) => {
       entry.rank = i + 1;
     });
@@ -458,12 +729,24 @@ class DatabaseStore {
 
   public deleteHistoryEntry(id: string) {
     this.history = (this.history || []).filter(h => h.id !== id);
-    this.saveHistory();
+    this.saveLocalHistory();
+    if (db) {
+      db.collection("history").deleteOne({ _id: id as any }).catch((err: any) => {
+        console.error("MongoDB deleteHistoryEntry failed:", err);
+        handleMongoError(err, OperationType.DELETE, "history");
+      });
+    }
   }
 
   public clearAllHistory() {
     this.history = [];
-    this.saveHistory();
+    this.saveLocalHistory();
+    if (db) {
+      db.collection("history").deleteMany({}).catch((err: any) => {
+        console.error("MongoDB clearAllHistory failed:", err);
+        handleMongoError(err, OperationType.DELETE, "history");
+      });
+    }
   }
 
   public archiveSession(sessionId: string) {
@@ -474,13 +757,11 @@ class DatabaseStore {
     if (!quiz) return;
 
     this.history = this.history || [];
-    // If already archived, don't duplicate
     if (this.history.some(h => h.id === sessionId)) {
       return;
     }
 
     const participants = this.getParticipants(sessionId);
-    // Only archive if there is at least 1 participant
     if (participants.length === 0) return;
 
     const leaderboard = this.calculateLeaderboard(sessionId, quiz);
@@ -531,7 +812,19 @@ class DatabaseStore {
     };
 
     this.history.push(historyEntry);
-    this.saveHistory();
+    this.history.sort((a, b) => new Date(b.playedAt).getTime() - new Date(a.playedAt).getTime());
+    this.saveLocalHistory();
+
+    if (db) {
+      db.collection("history").updateOne(
+        { _id: sessionId as any },
+        { $set: historyEntry },
+        { upsert: true }
+      ).catch((err: any) => {
+        console.error("MongoDB archiveSession failed:", err);
+        handleMongoError(err, OperationType.WRITE, "history");
+      });
+    }
   }
 }
 

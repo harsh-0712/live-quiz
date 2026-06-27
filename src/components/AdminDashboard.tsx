@@ -2,18 +2,23 @@ import React, { useState, useEffect, useRef } from "react";
 import { 
   Plus, Edit, Trash2, Play, Users, BarChart2, Share2, Copy, CheckCircle, 
   ChevronRight, ArrowLeft, RotateCcw, Volume2, ShieldAlert, Check, 
-  HelpCircle, Settings, Award, Clock, Save, X, ExternalLink, Download
+  HelpCircle, Settings, Award, Clock, Save, X, ExternalLink, Download, LogOut
 } from "lucide-react";
 import { Quiz, Question, Option, QuizSession, Participant, LeaderboardEntry } from "../types";
 
 interface AdminDashboardProps {
   adminToken: string;
   onLogout: () => void;
+  onPreviewParticipantScreen?: (sessionId?: string) => void;
 }
 
-export default function AdminDashboard({ adminToken, onLogout }: AdminDashboardProps) {
+export default function AdminDashboard({ adminToken, onLogout, onPreviewParticipantScreen }: AdminDashboardProps) {
   // Views: 'LIST', 'EDIT', 'LOBBY', 'LIVE', 'LEADERBOARD', 'HISTORY'
-  const [view, setView] = useState<"LIST" | "EDIT" | "LOBBY" | "LIVE" | "LEADERBOARD" | "HISTORY">("LIST");
+  const [view, setView] = useState<"LIST" | "EDIT" | "LOBBY" | "LIVE" | "LEADERBOARD" | "HISTORY">(() => {
+    const saved = localStorage.getItem("qsync_admin_view");
+    if (saved === "EDIT") return "LIST";
+    return (saved as any) || "LIST";
+  });
   const [quizzes, setQuizzes] = useState<Quiz[]>([]);
   const [loading, setLoading] = useState(true);
   
@@ -144,7 +149,60 @@ export default function AdminDashboard({ adminToken, onLogout }: AdminDashboardP
 
   useEffect(() => {
     fetchQuizzes();
+    
+    // Restore active session if any
+    const savedSessionId = localStorage.getItem("qsync_active_session_id");
+    if (savedSessionId) {
+      const restoreSession = async () => {
+        try {
+          const res = await fetch(`/api/sessions/${savedSessionId}`);
+          if (res.ok) {
+            const session = await res.json();
+            setActiveSession(session);
+            connectToSession(session.id);
+            const savedView = localStorage.getItem("qsync_admin_view");
+            if (savedView && ["LOBBY", "LIVE", "LEADERBOARD"].includes(savedView)) {
+              setView(savedView as any);
+            } else {
+              if (session.status === "LOBBY") {
+                setView("LOBBY");
+              } else if (session.status === "ACTIVE") {
+                setView("LIVE");
+              } else if (session.status === "COMPLETED") {
+                setView("LIVE");
+              } else if (session.status === "LEADERBOARD_REVEALED") {
+                setView("LEADERBOARD");
+              }
+            }
+          } else {
+            localStorage.removeItem("qsync_active_session_id");
+            localStorage.setItem("qsync_admin_view", "LIST");
+            setView("LIST");
+          }
+        } catch (e) {
+          console.error("Failed to restore session", e);
+        }
+      };
+      restoreSession();
+    } else {
+      const savedView = localStorage.getItem("qsync_admin_view");
+      if (savedView === "HISTORY") {
+        fetchHistory();
+      }
+    }
   }, []);
+
+  useEffect(() => {
+    localStorage.setItem("qsync_admin_view", view);
+  }, [view]);
+
+  useEffect(() => {
+    if (activeSession) {
+      localStorage.setItem("qsync_active_session_id", activeSession.id);
+    } else {
+      localStorage.removeItem("qsync_active_session_id");
+    }
+  }, [activeSession]);
 
   // Sync with live session using WebSockets
   const connectToSession = (sessionId: string) => {
@@ -239,6 +297,28 @@ export default function AdminDashboard({ adminToken, onLogout }: AdminDashboardP
       }
     } catch (e) {
       console.error("Failed to open lobby", e);
+    }
+  };
+
+  const deactivateSession = async () => {
+    if (!activeSession) return;
+    try {
+      await fetch(`/api/sessions/${activeSession.id}/action`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${adminToken}`
+        },
+        body: JSON.stringify({ action: "DEACTIVATE" })
+      });
+    } catch (e) {
+      console.error("Failed to deactivate session", e);
+    } finally {
+      setActiveSession(null);
+      if (wsRef.current) {
+        wsRef.current.close();
+        wsRef.current = null;
+      }
     }
   };
 
@@ -445,12 +525,12 @@ export default function AdminDashboard({ adminToken, onLogout }: AdminDashboardP
   return (
     <div className="flex-1 flex flex-col h-full bg-slate-50 overflow-hidden font-sans text-slate-900">
       {/* Top Header */}
-      <header className="h-16 bg-white border-b border-slate-200 flex items-center justify-between px-2 sm:px-6 shrink-0 shadow-sm">
+      <header className="h-16 bg-white border-b border-slate-200 flex items-center justify-between px-2.5 sm:px-6 shrink-0 shadow-sm">
         <div className="flex items-center gap-1.5 sm:gap-3 min-w-0">
           <div className="w-8 h-8 bg-indigo-600 rounded-lg flex items-center justify-center shadow-md shadow-indigo-100 shrink-0">
             <span className="text-white font-bold text-base">Q</span>
           </div>
-          <div className="min-w-0">
+          <div className={`min-w-0 ${activeSession ? "hidden sm:block" : ""}`}>
             <h1 className="font-bold text-slate-800 tracking-tight flex items-center gap-1 sm:gap-1.5 text-xs sm:text-sm md:text-base">
               <span className="truncate hidden sm:inline">LCE Quiz Organiser</span>
               <span className="truncate inline sm:hidden text-indigo-600 font-extrabold">LCE Quiz</span>
@@ -460,24 +540,39 @@ export default function AdminDashboard({ adminToken, onLogout }: AdminDashboardP
         </div>
 
         <div className="flex items-center gap-1.5 sm:gap-3 shrink-0">
-          {activeSession && (
+          {activeSession && ["LOBBY", "LIVE", "LEADERBOARD"].includes(view) && (
             <div 
               onClick={() => setShowShareModal(true)}
-              className="flex items-center gap-1 sm:gap-2 bg-emerald-50 hover:bg-emerald-100 text-emerald-800 px-2 sm:px-3 py-1 rounded-full border border-emerald-100 cursor-pointer transition shrink-0"
+              className="flex items-center gap-1 bg-emerald-50 hover:bg-emerald-100 text-emerald-800 px-1.5 sm:px-3 py-1 rounded-full border border-emerald-100 cursor-pointer transition shrink-0"
             >
               <div className="w-1.5 h-1.5 bg-emerald-500 rounded-full animate-pulse"></div>
               <span className="text-[9px] sm:text-xs font-semibold uppercase tracking-wider font-mono">
-                <span className="hidden sm:inline">ID: </span>
+                <span className="hidden xs:inline">ID: </span>
                 {activeSession.id.toUpperCase()}
               </span>
-              <Share2 className="w-2.5 h-2.5 sm:w-3.5 sm:h-3.5 ml-0.5 text-emerald-600" />
+              <Share2 className="w-2.5 h-2.5 sm:w-3 sm:h-3 ml-0.5 text-emerald-600" />
             </div>
           )}
+          {onPreviewParticipantScreen && (
+            <button
+              onClick={() => onPreviewParticipantScreen(activeSession?.id)}
+              className="px-2 sm:px-3 py-1.5 text-[10px] sm:text-xs font-bold text-indigo-600 hover:text-indigo-800 border border-indigo-200 hover:border-indigo-300 rounded-lg bg-indigo-50/50 hover:bg-indigo-50 transition shrink-0 font-sans flex items-center gap-1 cursor-pointer"
+            >
+              <ExternalLink className="w-3 h-3 text-indigo-500" />
+              <span className="hidden xs:inline sm:hidden">Preview</span>
+              <span className="hidden sm:inline">Preview Screen</span>
+            </button>
+          )}
           <button 
-            onClick={onLogout}
-            className="px-2 sm:px-3.5 py-1.5 text-[10px] sm:text-xs font-bold text-slate-600 hover:text-slate-800 border border-slate-200 rounded-lg bg-white hover:bg-slate-50 transition shrink-0 font-sans"
+            onClick={async () => {
+              await deactivateSession();
+              onLogout();
+            }}
+            className="px-2 sm:px-3 py-1.5 text-[10px] sm:text-xs font-bold text-slate-600 hover:text-slate-800 border border-slate-200 rounded-lg bg-white hover:bg-slate-50 transition shrink-0 font-sans flex items-center gap-1 cursor-pointer"
+            title="Sign Out"
           >
-            Sign Out
+            <LogOut className="w-3.5 h-3.5 text-slate-500" />
+            <span className="hidden sm:inline">Sign Out</span>
           </button>
         </div>
       </header>
@@ -907,7 +1002,10 @@ export default function AdminDashboard({ adminToken, onLogout }: AdminDashboardP
               <div className="border-t border-slate-100 mt-8 pt-6 flex flex-col sm:flex-row gap-3 sm:justify-between sm:items-center">
                 <button
                   type="button"
-                  onClick={() => { setView("LIST"); }}
+                  onClick={async () => {
+                    await deactivateSession();
+                    setView("LIST");
+                  }}
                   className="w-full sm:w-auto order-2 sm:order-1 px-5 py-3 border border-slate-200 rounded-xl font-bold text-slate-600 hover:bg-slate-50 transition text-sm text-center active:scale-95"
                 >
                   Back to Dashboard
@@ -1159,7 +1257,10 @@ export default function AdminDashboard({ adminToken, onLogout }: AdminDashboardP
               <div className="flex flex-col sm:flex-row justify-between gap-4 pt-6 border-t border-slate-100">
                 <button
                   type="button"
-                  onClick={() => { setView("LIST"); }}
+                  onClick={async () => {
+                    await deactivateSession();
+                    setView("LIST");
+                  }}
                   className="px-6 py-2.5 border border-slate-200 rounded-xl font-bold text-slate-600 hover:bg-slate-50 transition text-sm"
                 >
                   Return to Quizzes
@@ -1604,13 +1705,24 @@ export default function AdminDashboard({ adminToken, onLogout }: AdminDashboardP
               </p>
             </div>
 
-            <div className="flex gap-3 pt-2">
+            <div className="flex flex-col sm:flex-row gap-2 pt-2">
               <button
                 type="button"
                 onClick={() => setShowResetConfirm(false)}
-                className="flex-1 py-3 border border-slate-200 text-slate-600 rounded-xl font-bold hover:bg-slate-50 transition text-sm"
+                className="flex-1 py-2.5 border border-slate-200 text-slate-600 rounded-xl font-bold hover:bg-slate-50 transition text-xs"
               >
                 Keep Playing
+              </button>
+              <button
+                type="button"
+                onClick={async () => {
+                  setShowResetConfirm(false);
+                  await deactivateSession();
+                  setView("LIST");
+                }}
+                className="flex-1 py-2.5 bg-rose-600 hover:bg-rose-700 text-white rounded-xl font-bold shadow-md shadow-rose-100 transition text-xs"
+              >
+                Stop & Exit
               </button>
               <button
                 type="button"
@@ -1618,7 +1730,7 @@ export default function AdminDashboard({ adminToken, onLogout }: AdminDashboardP
                   handleSessionAction("RESET");
                   setShowResetConfirm(false);
                 }}
-                className="flex-1 py-3 bg-amber-600 hover:bg-amber-700 text-white rounded-xl font-bold shadow-md shadow-amber-100 transition text-sm"
+                className="flex-1 py-2.5 bg-amber-600 hover:bg-amber-700 text-white rounded-xl font-bold shadow-md shadow-amber-100 transition text-xs"
               >
                 Reset & Restart
               </button>

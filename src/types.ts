@@ -36,6 +36,7 @@ export interface QuizSession {
   startedAt: string | null;
   completedAt: string | null;
   leaderboardRevealedAt: string | null;
+  questionOrder: string[]; // Store ordered question IDs
 }
 
 export interface Participant {
