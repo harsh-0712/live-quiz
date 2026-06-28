@@ -517,7 +517,6 @@ class DatabaseStore {
     const existing = this.getParticipantBySalesId(participant.quizSessionId, participant.salesId);
     if (existing) {
       existing.connectionStatus = "CONNECTED";
-      existing.id = participant.id; // update to new socket ID
       this.saveLocalData();
       
       if (db) {

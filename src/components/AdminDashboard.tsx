@@ -516,7 +516,11 @@ export default function AdminDashboard({ adminToken, onLogout, onPreviewParticip
   };
 
   const activeQuiz = activeSession ? quizzes.find(q => q.id === activeSession.quizId) : null;
-  const currentQuestion = (activeQuiz && activeSession) ? activeQuiz.questions[activeSession.currentQuestionIndex] : null;
+  const currentQuestion = (activeQuiz && activeSession) ? (
+    (activeSession.questionOrder && activeSession.questionOrder.length > 0)
+      ? activeQuiz.questions.find(q => q.id === activeSession.questionOrder[activeSession.currentQuestionIndex])
+      : activeQuiz.questions[activeSession.currentQuestionIndex]
+  ) : null;
 
   const responseStats = responseStatsState || { answeredCount: 0, totalCount: 0, activeCount: 0, answeredParticipants: [] };
 
@@ -1332,7 +1336,7 @@ export default function AdminDashboard({ adminToken, onLogout, onPreviewParticip
             ) : (
               <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
                 {/* Left Side: Sessions List Sidebar */}
-                <div className="lg:col-span-4 space-y-3.5">
+                <div className={`lg:col-span-4 space-y-3.5 ${selectedHistoryEntry ? "hidden lg:block" : "block"}`}>
                   <h3 className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-2 font-mono">Past Quiz Sessions ({history.length})</h3>
                   <div className="space-y-2.5 max-h-[600px] overflow-y-auto pr-2">
                     {history.map((entry) => {
@@ -1387,9 +1391,17 @@ export default function AdminDashboard({ adminToken, onLogout, onPreviewParticip
                 </div>
 
                 {/* Right Side: Selected Session Detail View */}
-                <div className="lg:col-span-8">
+                <div className={`lg:col-span-8 ${selectedHistoryEntry ? "block" : "hidden lg:block"}`}>
                   {selectedHistoryEntry ? (
                     <div className="bg-white rounded-2xl border border-slate-200 p-4 sm:p-6 md:p-8 shadow-sm space-y-6">
+                      {/* Back Button for Mobile/Tablet */}
+                      <button
+                        onClick={() => setSelectedHistoryEntry(null)}
+                        className="lg:hidden flex items-center gap-2 text-sm font-bold text-slate-600 hover:text-indigo-600 transition mb-2 cursor-pointer bg-slate-50 px-3.5 py-2 rounded-xl border border-slate-200 w-fit"
+                      >
+                        <ArrowLeft className="w-4 h-4" /> Back to History List
+                      </button>
+
                       {/* Summary Header */}
                       <div className="border-b border-slate-100 pb-5">
                         <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-2">

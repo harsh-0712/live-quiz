@@ -103,6 +103,15 @@ function sanitizeQuestionForParticipant(question: Question, participantId: strin
   };
 }
 
+// Helper to get current question considering the session's shuffled question order
+function getCurrentQuestion(session: QuizSession, quiz: Quiz): Question | undefined {
+  if (session.questionOrder && session.questionOrder.length > 0) {
+    const questionId = session.questionOrder[session.currentQuestionIndex];
+    return quiz.questions.find(q => q.id === questionId);
+  }
+  return quiz.questions[session.currentQuestionIndex];
+}
+
 // Calculate responsive state details for organizer
 function getResponseState(sessionId: string, currentQuestionId?: string) {
   const participants = dbStore.getParticipants(sessionId);
@@ -175,10 +184,8 @@ wss.on("connection", (ws, req) => {
     let participantRecord: Participant;
     
     if (existing) {
-      // Reconnection or session restoration
+      // Reconnection or session restoration (keep the stable ID for answers and options consistency)
       existing.connectionStatus = "CONNECTED";
-      // Update DB record ID to current connectionId for synchronization
-      existing.id = connectionId;
       dbStore.addParticipant(existing);
       participantRecord = existing;
     } else {
@@ -214,7 +221,8 @@ wss.on("connection", (ws, req) => {
           data: { state: "LOBBY", session }
         }));
       } else if (session.status === "ACTIVE") {
-        const currentQuestion = quiz.questions[session.currentQuestionIndex];
+        const currentQuestion = getCurrentQuestion(session, quiz);
+        if (!currentQuestion) return;
         const participantAnswer = dbStore.getAnswer(participantRecord.id, currentQuestion.id) || null;
         
         ws.send(JSON.stringify({
@@ -262,7 +270,7 @@ wss.on("connection", (ws, req) => {
           state: "ORGANISER_CONNECTED",
           session,
           participants,
-          responseState: getResponseState(sessionId, quiz?.questions[session.currentQuestionIndex]?.id),
+          responseState: getResponseState(sessionId, quiz ? getCurrentQuestion(session, quiz)?.id : undefined),
           leaderboard
         }
       }));
@@ -281,7 +289,7 @@ wss.on("connection", (ws, req) => {
         const quiz = dbStore.getQuiz(session.quizId);
         if (!quiz) return;
 
-        const currentQuestion = quiz.questions[session.currentQuestionIndex];
+        const currentQuestion = getCurrentQuestion(session, quiz);
         if (!currentQuestion || currentQuestion.id !== questionId) return;
 
         const participantRecord = dbStore.getParticipantBySalesId(sessionId, salesId);
@@ -346,7 +354,7 @@ wss.on("connection", (ws, req) => {
           data: {
             state: "ACTIVE",
             session,
-            currentQuestion: sanitizeQuestionForParticipant(currentQuestion),
+            currentQuestion: sanitizeQuestionForParticipant(currentQuestion, participantRecord.id),
             participantAnswer: savedAnswer
           }
         }));

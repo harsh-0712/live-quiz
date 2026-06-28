@@ -432,7 +432,7 @@ export default function ParticipantPortal({ initialSessionId, onLeave }: Partici
                         }}
                         maxLength={5}
                         placeholder="Enter 5-digit code"
-                        className="w-full px-3 py-2.5 sm:px-4 sm:py-3 rounded-xl border border-slate-200 bg-white focus:outline-none focus:ring-2 focus:ring-indigo-600/20 focus:border-indigo-600 text-sm font-bold text-slate-900 transition font-mono tracking-widest text-center"
+                        className="w-full px-3 py-2.5 sm:px-4 sm:py-3 rounded-xl border border-slate-200 bg-white focus:outline-none focus:ring-2 focus:ring-indigo-600/20 focus:border-indigo-600 text-base font-bold text-slate-900 transition font-mono tracking-widest text-center"
                         required
                       />
                     </div>
@@ -443,7 +443,7 @@ export default function ParticipantPortal({ initialSessionId, onLeave }: Partici
                         type="text"
                         value={name}
                         onChange={(e) => setName(e.target.value)}
-                        className="w-full px-3 py-2.5 sm:px-4 sm:py-3 rounded-xl border border-slate-200 bg-white focus:outline-none focus:ring-2 focus:ring-indigo-600/20 focus:border-indigo-600 text-sm text-slate-800 transition font-medium"
+                        className="w-full px-3 py-2.5 sm:px-4 sm:py-3 rounded-xl border border-slate-200 bg-white focus:outline-none focus:ring-2 focus:ring-indigo-600/20 focus:border-indigo-600 text-base text-slate-800 transition font-medium"
                         required
                       />
                     </div>
@@ -454,7 +454,7 @@ export default function ParticipantPortal({ initialSessionId, onLeave }: Partici
                         type="text"
                         value={salesId}
                         onChange={(e) => setSalesId(e.target.value)}
-                        className="w-full px-3 py-2.5 sm:px-4 sm:py-3 rounded-xl border border-slate-200 bg-white focus:outline-none focus:ring-2 focus:ring-indigo-600/20 focus:border-indigo-600 text-sm text-slate-800 transition font-mono uppercase tracking-wider font-bold"
+                        className="w-full px-3 py-2.5 sm:px-4 sm:py-3 rounded-xl border border-slate-200 bg-white focus:outline-none focus:ring-2 focus:ring-indigo-600/20 focus:border-indigo-600 text-base text-slate-800 transition font-mono uppercase tracking-wider font-bold"
                         required
                       />
                     </div>
