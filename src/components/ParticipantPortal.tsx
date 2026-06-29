@@ -31,17 +31,38 @@ export default function ParticipantPortal({ initialSessionId, onLeave }: Partici
   // Selection states (for pending edits/answers)
   const [selectedOptionIds, setSelectedOptionIds] = useState<string[]>([]);
   const [isModifying, setIsModifying] = useState(false);
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
   // Live Timer states
   const [displayTimeMs, setDisplayTimeMs] = useState(0);
 
   const wsRef = useRef<WebSocket | null>(null);
   const timerIntervalRef = useRef<any>(null);
-  const modifyStartTimeRef = useRef<number | null>(null);
+  const localQuestionStartTimeRef = useRef<number | null>(null);
+
+  // Set the local start time when a new question is rendered/loaded on the participant's screen
+  useEffect(() => {
+    if (sessionStatus === "ACTIVE" && currentQuestion && sessionId) {
+      const key = `qsync_start_${sessionId}_${currentQuestion.id}`;
+      const savedStart = localStorage.getItem(key);
+      if (savedStart) {
+        localQuestionStartTimeRef.current = parseInt(savedStart, 10);
+      } else {
+        const now = Date.now();
+        localStorage.setItem(key, now.toString());
+        localQuestionStartTimeRef.current = now;
+      }
+    } else {
+      localQuestionStartTimeRef.current = null;
+    }
+  }, [sessionStatus, currentQuestion?.id, sessionId]);
 
   // Refs to keep track of current states in the WebSocket closure
   const isJoinedRef = useRef(isJoined);
   const sessionIdRef = useRef(sessionId);
+  const isModifyingRef = useRef(isModifying);
+  const currentQuestionRef = useRef(currentQuestion);
+  const selectedOptionIdsRef = useRef(selectedOptionIds);
 
   useEffect(() => {
     isJoinedRef.current = isJoined;
@@ -50,6 +71,18 @@ export default function ParticipantPortal({ initialSessionId, onLeave }: Partici
   useEffect(() => {
     sessionIdRef.current = sessionId;
   }, [sessionId]);
+
+  useEffect(() => {
+    isModifyingRef.current = isModifying;
+  }, [isModifying]);
+
+  useEffect(() => {
+    currentQuestionRef.current = currentQuestion;
+  }, [currentQuestion]);
+
+  useEffect(() => {
+    selectedOptionIdsRef.current = selectedOptionIds;
+  }, [selectedOptionIds]);
 
   // Synchronize deep links and saved states on load/change
   useEffect(() => {
@@ -94,21 +127,21 @@ export default function ParticipantPortal({ initialSessionId, onLeave }: Partici
       return;
     }
 
-    const questionStartTime = activeSession.startedAt ? new Date(activeSession.startedAt).getTime() : Date.now();
-
     timerIntervalRef.current = setInterval(() => {
       const now = Date.now();
+
+      if (isSubmitting) {
+        // Stop updating displayTimeMs immediately once the user locks the selection
+        return;
+      }
 
       if (participantAnswer && !isModifying) {
         // Answer is saved, freeze display at submitted time
         setDisplayTimeMs(participantAnswer.timeTakenMs);
-      } else if (participantAnswer && isModifying && modifyStartTimeRef.current) {
-        // Answer is saved but they are editing. Accumulate previous time + elapsed editing time
-        const editingElapsed = now - modifyStartTimeRef.current;
-        setDisplayTimeMs(participantAnswer.timeTakenMs + editingElapsed);
       } else {
-        // First time thinking (no previous submission)
-        const elapsed = now - questionStartTime;
+        // First time thinking or modifying a selection - count absolute elapsed time since the participant saw the question locally
+        const start = localQuestionStartTimeRef.current || (activeSession.startedAt ? new Date(activeSession.startedAt).getTime() : now);
+        const elapsed = now - start;
         setDisplayTimeMs(elapsed > 0 ? elapsed : 0);
       }
     }, 100);
@@ -118,10 +151,11 @@ export default function ParticipantPortal({ initialSessionId, onLeave }: Partici
         clearInterval(timerIntervalRef.current);
       }
     };
-  }, [sessionStatus, currentQuestion, activeSession, participantAnswer, isModifying]);
+  }, [sessionStatus, currentQuestion, activeSession, participantAnswer, isModifying, isSubmitting]);
 
   // Handle local option clicks
   const handleOptionClick = (optionId: string, isSingle: boolean) => {
+    if (isSubmitting) return;
     let nextSelection: string[];
 
     if (isSingle) {
@@ -140,18 +174,26 @@ export default function ParticipantPortal({ initialSessionId, onLeave }: Partici
     if (participantAnswer) {
       if (!isModifying) {
         setIsModifying(true);
-        modifyStartTimeRef.current = Date.now();
       }
     }
   };
 
   // Submit/Confirm selection
   const handleConfirmAnswer = () => {
-    if (selectedOptionIds.length === 0) return;
+    if (selectedOptionIds.length === 0 || isSubmitting) return;
     if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
       setError("Unable to submit. Connection lost. Retrying connection...");
       return;
     }
+
+    let finalTimeTakenMs = displayTimeMs;
+    const now = Date.now();
+    if (localQuestionStartTimeRef.current) {
+      finalTimeTakenMs = now - localQuestionStartTimeRef.current;
+    }
+
+    setIsSubmitting(true);
+    setDisplayTimeMs(finalTimeTakenMs);
 
     wsRef.current.send(JSON.stringify({
       type: "SUBMIT_ANSWER",
@@ -159,12 +201,12 @@ export default function ParticipantPortal({ initialSessionId, onLeave }: Partici
         quizSessionId: sessionId,
         salesId,
         questionId: currentQuestion.id,
-        selectedOptionIds
+        selectedOptionIds,
+        timeTakenMs: Math.round(finalTimeTakenMs)
       }
     }));
 
     setIsModifying(false);
-    modifyStartTimeRef.current = null;
   };
 
   // WebSocket Connector
@@ -188,6 +230,7 @@ export default function ParticipantPortal({ initialSessionId, onLeave }: Partici
       setReconnecting(false);
       setLoading(false);
       setError("");
+      setIsSubmitting(false);
     };
 
     ws.onmessage = (event) => {
@@ -197,18 +240,24 @@ export default function ParticipantPortal({ initialSessionId, onLeave }: Partici
           const { state, session, currentQuestion: q, participantAnswer: ans, leaderboard: lBoard } = message.data;
           setSessionStatus(state);
           setActiveSession(session);
+          setIsSubmitting(false);
           
           if (q) {
+            const isSameQuestion = currentQuestionRef.current && currentQuestionRef.current.id === q.id;
             setCurrentQuestion(q);
             // Sync selection status
             if (ans) {
               setParticipantAnswer(ans);
-              setSelectedOptionIds(ans.selectedOptionIds);
-              setIsModifying(false);
+              if (!isSameQuestion || !isModifyingRef.current) {
+                setSelectedOptionIds(ans.selectedOptionIds);
+                setIsModifying(false);
+              }
             } else {
               setParticipantAnswer(null);
-              setSelectedOptionIds([]);
-              setIsModifying(false);
+              if (!isSameQuestion || !isModifyingRef.current) {
+                setSelectedOptionIds([]);
+                setIsModifying(false);
+              }
             }
           }
 
@@ -229,9 +278,11 @@ export default function ParticipantPortal({ initialSessionId, onLeave }: Partici
           setConnected(false);
           setSessionStatus("JOIN");
           setActiveSession(null);
+          setIsSubmitting(false);
         } else if (message.type === "LOBBY_UPDATE") {
           setSessionStatus("LOBBY");
           setActiveSession(message.data.session);
+          setIsSubmitting(false);
         } else if (message.type === "QUIZ_STARTED") {
           setSessionStatus("ACTIVE");
           setActiveSession(message.data.session);
@@ -239,30 +290,41 @@ export default function ParticipantPortal({ initialSessionId, onLeave }: Partici
           setParticipantAnswer(null);
           setSelectedOptionIds([]);
           setIsModifying(false);
+          setIsSubmitting(false);
         } else if (message.type === "QUESTION_CHANGED") {
           setSessionStatus("ACTIVE");
           setActiveSession(message.data.session);
-          setCurrentQuestion(message.data.question);
+          const q = message.data.question;
+          const isSameQuestion = currentQuestionRef.current && currentQuestionRef.current.id === q.id;
+          setCurrentQuestion(q);
+          setIsSubmitting(false);
           
           const ans = message.data.participantAnswer;
           if (ans) {
             setParticipantAnswer(ans);
-            setSelectedOptionIds(ans.selectedOptionIds);
-            setIsModifying(false);
+            if (!isSameQuestion || !isModifyingRef.current) {
+              setSelectedOptionIds(ans.selectedOptionIds);
+              setIsModifying(false);
+            }
           } else {
             setParticipantAnswer(null);
-            setSelectedOptionIds([]);
-            setIsModifying(false);
+            if (!isSameQuestion || !isModifyingRef.current) {
+              setSelectedOptionIds([]);
+              setIsModifying(false);
+            }
           }
         } else if (message.type === "QUIZ_COMPLETED") {
           setSessionStatus("COMPLETED");
           setActiveSession(message.data.session);
+          setIsSubmitting(false);
         } else if (message.type === "LEADERBOARD_REVEALED") {
           setSessionStatus("LEADERBOARD_REVEALED");
           setLeaderboard(message.data.leaderboard);
+          setIsSubmitting(false);
         } else if (message.type === "ERROR") {
           setError(message.data.message);
           setLoading(false);
+          setIsSubmitting(false);
 
           // If the session code is expired or invalid, reset everything immediately
           if (message.data.message.includes("Invalid Session Code") || message.data.message.includes("not found")) {
@@ -286,6 +348,7 @@ export default function ParticipantPortal({ initialSessionId, onLeave }: Partici
 
     ws.onclose = () => {
       setConnected(false);
+      setIsSubmitting(false);
       // Automatic reconnection loop
       setTimeout(() => {
         if (isJoinedRef.current && sessionIdRef.current === sId && wsRef.current === ws) {
@@ -500,29 +563,6 @@ export default function ParticipantPortal({ initialSessionId, onLeave }: Partici
                     </p>
                   </div>
 
-                  {/* Simple Participant Instructions */}
-                  <div className="p-3.5 sm:p-4 bg-indigo-50/50 border border-indigo-100/60 rounded-2xl w-full text-left space-y-2 sm:space-y-2.5 shadow-xs">
-                    <p className="text-[9px] sm:text-[10px] font-extrabold text-indigo-600 uppercase tracking-widest border-b border-indigo-100/20 pb-1 sm:pb-1.5">How to Play</p>
-                    <div className="space-y-2 text-[10px] sm:text-[11px] text-slate-600">
-                      <div className="flex items-start gap-1.5">
-                        <span className="font-bold text-indigo-600 mt-0.5">1.</span>
-                        <p><strong>Standby:</strong> Keep this browser tab open. Questions appear automatically when the host begins.</p>
-                      </div>
-                      <div className="flex items-start gap-1.5">
-                        <span className="font-bold text-indigo-600 mt-0.5">2.</span>
-                        <p><strong>Answer & Confirm:</strong> Select your option and tap <strong>Confirm Selection</strong>. Quick responses earn higher score multipliers!</p>
-                      </div>
-                      <div className="flex items-start gap-1.5">
-                        <span className="font-bold text-indigo-600 mt-0.5">3.</span>
-                        <p><strong>Progression:</strong> Once all participants finish answering, the organiser will move to the next question.</p>
-                      </div>
-                      <div className="flex items-start gap-1.5">
-                        <span className="font-bold text-indigo-600 mt-0.5">4.</span>
-                        <p><strong>Stay Active:</strong> Keep your device unlocked and active to prevent accidental disconnection.</p>
-                      </div>
-                    </div>
-                  </div>
-
                   <div className="p-3.5 sm:p-4 bg-white border border-slate-200/60 rounded-2xl w-full text-left space-y-2.5 sm:space-y-3 shadow-xs">
                     <p className="text-[9px] sm:text-[10px] font-extrabold text-indigo-500 uppercase tracking-widest border-b border-slate-50 pb-1 sm:pb-1.5">Registered Identity</p>
                     <div className="flex justify-between items-center text-[11px] sm:text-xs">
@@ -578,12 +618,13 @@ export default function ParticipantPortal({ initialSessionId, onLeave }: Partici
                         <button
                           key={o.id}
                           type="button"
+                          disabled={isSubmitting}
                           onClick={() => handleOptionClick(o.id, currentQuestion.type === "SINGLE_CORRECT")}
-                          className={`w-full text-left p-3 sm:p-4 rounded-xl border-2 flex items-center justify-between transition-all duration-200 active:scale-[0.99] cursor-pointer shadow-xs ${
+                          className={`w-full text-left p-3 sm:p-4 rounded-xl border-2 flex items-center justify-between transition-all duration-200 active:scale-[0.99] shadow-xs ${
                             isSelected 
                               ? "border-indigo-600 bg-indigo-50/70 text-indigo-950" 
                               : "border-slate-100 bg-white hover:border-slate-200 text-slate-700"
-                          }`}
+                          } ${isSubmitting ? "opacity-90 cursor-not-allowed" : "cursor-pointer"}`}
                         >
                           <span className="text-[11px] sm:text-xs font-semibold leading-tight pr-3">{o.text}</span>
                           <div className={`w-4.5 h-4.5 sm:w-5 sm:h-5 rounded-full border shrink-0 flex items-center justify-center transition-all duration-200 ${
@@ -606,7 +647,7 @@ export default function ParticipantPortal({ initialSessionId, onLeave }: Partici
                     <span>Timer: <strong className="text-slate-800 font-bold">{(displayTimeMs / 1000).toFixed(2)}s</strong></span>
                   </div>
 
-                  {participantAnswer && !isModifying ? (
+                  {(participantAnswer && !isModifying) || isSubmitting ? (
                     <div className="p-2.5 sm:p-3 bg-emerald-50 border border-emerald-100 rounded-xl shadow-xs animate-fade-in">
                       <p className="text-[9px] sm:text-[10px] text-emerald-800 font-extrabold flex items-center justify-center gap-1 uppercase tracking-wider">
                         <Check className="w-3 h-3 text-emerald-600 stroke-[3.5]" />

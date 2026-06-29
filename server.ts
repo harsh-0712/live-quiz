@@ -314,12 +314,17 @@ wss.on("connection", (ws, req) => {
         // Apply our precise timing algorithm
         const now = Date.now();
         const existingAnswer = dbStore.getAnswer(participantRecord.id, questionId);
+        const clientTimeTakenMs = typeof message.data.timeTakenMs === "number" ? message.data.timeTakenMs : null;
         
         let newTimeTaken = 0;
         if (!existingAnswer) {
           // First submission
-          const questionStartTime = session.startedAt ? new Date(session.startedAt).getTime() : now;
-          newTimeTaken = now - questionStartTime;
+          if (clientTimeTakenMs !== null) {
+            newTimeTaken = clientTimeTakenMs;
+          } else {
+            const questionStartTime = session.startedAt ? new Date(session.startedAt).getTime() : now;
+            newTimeTaken = now - questionStartTime;
+          }
           
           dbStore.saveAnswer({
             participantId: participantRecord.id,
@@ -327,15 +332,18 @@ wss.on("connection", (ws, req) => {
             selectedOptionIds,
             isCorrect,
             timeTakenMs: newTimeTaken,
-            firstShownAt: questionStartTime,
+            firstShownAt: session.startedAt ? new Date(session.startedAt).getTime() : now,
             lastAnsweredAt: now,
             isAnswered: true
           });
         } else {
           // Resubmitting/changing selection
-          // Time taken since lastAnsweredAt gets accumulated
-          const timeSinceLastAnswer = now - (existingAnswer.lastAnsweredAt || now);
-          newTimeTaken = existingAnswer.timeTakenMs + timeSinceLastAnswer;
+          if (clientTimeTakenMs !== null) {
+            newTimeTaken = clientTimeTakenMs;
+          } else {
+            const timeSinceLastAnswer = now - (existingAnswer.lastAnsweredAt || now);
+            newTimeTaken = existingAnswer.timeTakenMs + timeSinceLastAnswer;
+          }
           
           dbStore.saveAnswer({
             ...existingAnswer,
