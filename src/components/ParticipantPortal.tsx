@@ -500,6 +500,29 @@ export default function ParticipantPortal({ initialSessionId, onLeave }: Partici
                     </p>
                   </div>
 
+                  {/* Simple Participant Instructions */}
+                  <div className="p-3.5 sm:p-4 bg-indigo-50/50 border border-indigo-100/60 rounded-2xl w-full text-left space-y-2 sm:space-y-2.5 shadow-xs">
+                    <p className="text-[9px] sm:text-[10px] font-extrabold text-indigo-600 uppercase tracking-widest border-b border-indigo-100/20 pb-1 sm:pb-1.5">How to Play</p>
+                    <div className="space-y-2 text-[10px] sm:text-[11px] text-slate-600">
+                      <div className="flex items-start gap-1.5">
+                        <span className="font-bold text-indigo-600 mt-0.5">1.</span>
+                        <p><strong>Standby:</strong> Keep this browser tab open. Questions appear automatically when the host begins.</p>
+                      </div>
+                      <div className="flex items-start gap-1.5">
+                        <span className="font-bold text-indigo-600 mt-0.5">2.</span>
+                        <p><strong>Answer & Confirm:</strong> Select your option and tap <strong>Confirm Selection</strong>. Quick responses earn higher score multipliers!</p>
+                      </div>
+                      <div className="flex items-start gap-1.5">
+                        <span className="font-bold text-indigo-600 mt-0.5">3.</span>
+                        <p><strong>Progression:</strong> Once all participants finish answering, the organiser will move to the next question.</p>
+                      </div>
+                      <div className="flex items-start gap-1.5">
+                        <span className="font-bold text-indigo-600 mt-0.5">4.</span>
+                        <p><strong>Stay Active:</strong> Keep your device unlocked and active to prevent accidental disconnection.</p>
+                      </div>
+                    </div>
+                  </div>
+
                   <div className="p-3.5 sm:p-4 bg-white border border-slate-200/60 rounded-2xl w-full text-left space-y-2.5 sm:space-y-3 shadow-xs">
                     <p className="text-[9px] sm:text-[10px] font-extrabold text-indigo-500 uppercase tracking-widest border-b border-slate-50 pb-1 sm:pb-1.5">Registered Identity</p>
                     <div className="flex justify-between items-center text-[11px] sm:text-xs">
